@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 桌遊合集</title>
+    <!-- Tailwind (CDN 版本，方便單檔部署) -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css"
+      rel="stylesheet"
+    />
+    <!-- React 18 UMD + Babel (方便單檔 JSX) -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      /* 小型輔助樣式 */
+      .glass { backdrop-filter: blur(8px); background: rgba(255,255,255,0.8) }
+      .board-cell { user-select: none; }
+      .no-tap-highlight { -webkit-tap-highlight-color: transparent; }
+    </style>
+  </head>
+  <body class="bg-gray-100 text-gray-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useMemo, useRef } = React;
+
+      // -----------------------------
+      // 共用：本地儲存
+      // -----------------------------
+      const LS_KEYS = {
+        SETTINGS: 'ai-board-arcade::settings',
+        STATS: 'ai-board-arcade::stats',
+      };
+
+      const defaultSettings = {
+        ttt: { advanced: false, ai: 'medium', first: 'human' }, // 井字棋
+        reversi: { size: 8, ai: 'medium', first: 'black' },     // 黑白棋
+        gomoku: { size: 15, ai: 'medium', first: 'black' },     // 五子棋
+      };
+
+      const defaultStats = {
+        ttt: { win: 0, lose: 0, draw: 0 },
+        reversi: { win: 0, lose: 0, draw: 0 },
+        gomoku: { win: 0, lose: 0, draw: 0 },
+      };
+
+      function loadLS(key, fallback) {
+        try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
+      }
+      function saveLS(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} }
+
+      // -----------------------------
+      // 共用：UI 元件
+      // -----------------------------
+      function TopBar({ onHome, onSettings, onStats, onHelp }) {
+        return (
+          <div className="w-full sticky top-0 z-10 bg-white shadow-sm">
+            <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <button onClick={onHome} className="px-3 py-1.5 rounded-lg bg-gray-900 text-white font-semibold hover:bg-gray-800">AI 桌遊合集</button>
+                <span className="text-sm text-gray-500">與 AI 對戰 · 單檔可部署</span>
+              </div>
+              <div className="space-x-2">
+                <button onClick={onSettings} className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">設定</button>
+                <button onClick={onStats} className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">統計</button>
+                <button onClick={onHelp} className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">說明</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function Card({ title, desc, onClick, children }) {
+        return (
+          <div className="bg-white rounded-2xl shadow hover:shadow-md transition p-5 flex flex-col">
+            <div className="flex-1">
+              <h3 className="text-xl font-bold mb-2">{title}</h3>
+              <p className="text-gray-600 mb-4">{desc}</p>
+            </div>
+            {children}
+            <button onClick={onClick} className="mt-4 px-4 py-2 rounded-xl bg-gray-900 text-white font-semibold hover:bg-gray-800">開始</button>
+          </div>
+        );
+      }
+
+      function Pill({ children }) {
+        return <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs mr-2">{children}</span>;
+      }
+
+      function Section({ title, children, tight }) {
+        return (
+          <section className="mb-6">
+            <h2 className="text-lg font-bold mb-2">{title}</h2>
+            <div className={tight ? '' : 'space-y-2'}>{children}</div>
+          </section>
+        );
+      }
+
+      // -----------------------------
+      // 首頁
+      // -----------------------------
+      function Home({ settings, onStartTTT, onStartReversi, onStartGomoku }) {
+        return (
+          <div className="max-w-6xl mx-auto px-4 py-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <Card
+                title="井字棋 (Tic-Tac-Toe)"
+                desc="經典 3×3。支援進階模式（雙方最多 3 枚在場、超過自動移除最早）。AI：Minimax/啟發式。"
+                onClick={onStartTTT}
+              >
+                <div>
+                  <Pill>先手：{settings.ttt.first === 'human' ? '玩家' : 'AI'}</Pill>
+                  <Pill>AI：{settings.ttt.ai}</Pill>
+                  <Pill>{settings.ttt.advanced ? '進階模式' : '標準模式'}</Pill>
+                </div>
+              </Card>
+              <Card
+                title="黑白棋 (Reversi/Othello)"
+                desc="8×8 棋盤。合法翻子、無子可下需 pass。AI：α-β 搜尋 + 角/行動力評估。"
+                onClick={onStartReversi}
+              >
+                <div>
+                  <Pill>先手：{settings.reversi.first === 'black' ? '黑 (玩家)' : '白 (玩家)'}</Pill>
+                  <Pill>AI：{settings.reversi.ai}</Pill>
+                </div>
+              </Card>
+              <Card
+                title="五子棋 (Gomoku)"
+                desc="15×15 交點下子，連五即勝。AI：即勝/即防優先 + 鄰近啟發。"
+                onClick={onStartGomoku}
+              >
+                <div>
+                  <Pill>先手：{settings.gomoku.first === 'black' ? '黑 (玩家)' : '白 (玩家)'}</Pill>
+                  <Pill>AI：{settings.gomoku.ai}</Pill>
+                </div>
+              </Card>
+            </div>
+          </div>
+        );
+      }
+
+      // -----------------------------
+      // 井字棋 (含進階模式)
+      // -----------------------------
+      function TicTacToe({ settings, onExit, onFinish }) {
+        const [board, setBoard] = useState(Array(9).fill(null)); // 'X'|'O'|null
+        const [turn, setTurn] = useState(settings.first === 'human' ? 'X' : 'O');
+        const [xQueue, setXQueue] = useState([]); // 進階模式：紀錄 X 放子的順序索引
+        const [oQueue, setOQueue] = useState([]); // 同上
+        const [status, setStatus] = useState('遊戲中');
+        const [thinking, setThinking] = useState(false);
+
+        const lines = [
+          [0,1,2],[3,4,5],[6,7,8],
+          [0,3,6],[1,4,7],[2,5,8],
+          [0,4,8],[2,4,6]
+        ];
+
+        function checkWinner(bd) {
+          for (const [a,b,c] of lines) {
+            if (bd[a] && bd[a] === bd[b] && bd[a] === bd[c]) return bd[a];
+          }
+          if (bd.every(x => x)) return 'draw';
+          return null;
+        }
+
+        function placeAt(idx, player, bd, qX, qO) {
+          const nb = bd.slice();
+          const nqX = qX.slice();
+          const nqO = qO.slice();
+          if (settings.advanced) {
+            if (player === 'X' && nqX.length >= 3) { const rm = nqX.shift(); nb[rm] = null; }
+            if (player === 'O' && nqO.length >= 3) { const rm = nqO.shift(); nb[rm] = null; }
+          }
+          nb[idx] = player;
+          if (player === 'X') nqX.push(idx); else nqO.push(idx);
+          return { nb, nqX, nqO };
+        }
+
+        function humanMove(i) {
+          if (status !== '遊戲中' || thinking) return;
+          if (turn !== 'X') return; // 玩家固定 X
+          if (board[i]) return;
+          const { nb, nqX, nqO } = placeAt(i, 'X', board, xQueue, oQueue);
+          const w = checkWinner(nb);
+          setBoard(nb); setXQueue(nqX); setOQueue(nqO);
+          if (w) { gameOver(w); return; }
+          setTurn('O');
+        }
+
+        function gameOver(winner) {
+          let text = '';
+          if (winner === 'draw') text = '平手';
+          else text = winner === 'X' ? '玩家勝利' : 'AI 勝利';
+          setStatus(text);
+          onFinish(winner === 'draw' ? 'draw' : (winner === 'X' ? 'win' : 'lose'));
+        }
+
+        // AI ---
+        useEffect(() => {
+          if (status !== '遊戲中') return;
+          if (turn !== 'O') return; // AI 是 O
+          setThinking(true);
+          const t = setTimeout(() => {
+            const move = settings.advanced ? tttHeuristicMove(board, xQueue, oQueue) : tttBestMoveMinimax(board);
+            if (move == null) { setThinking(false); return; }
+            const { nb, nqX, nqO } = placeAt(move, 'O', board, xQueue, oQueue);
+            const w = checkWinner(nb);
+            setBoard(nb); setXQueue(nqX); setOQueue(nqO);
+            if (w) { gameOver(w); setThinking(false); return; }
+            setTurn('X'); setThinking(false);
+          }, 300);
+          return () => clearTimeout(t);
+        }, [turn, status, board, xQueue, oQueue, settings.advanced]);
+
+        function tttBestMoveMinimax(bd) {
+          const avail = bd.map((v,i)=>v?null:i).filter(i=>i!==null);
+          let bestScore = -Infinity, bestMove = null;
+          for (const i of avail) {
+            const nb = bd.slice(); nb[i] = 'O';
+            const score = minimax(nb, false);
+            if (score > bestScore) { bestScore = score; bestMove = i; }
+          }
+          return bestMove;
+        }
+        function minimax(bd, isMax) {
+          const w = checkWinner(bd);
+          if (w === 'O') return 1;
+          if (w === 'X') return -1;
+          if (w === 'draw') return 0;
+          const avail = bd.map((v,i)=>v?null:i).filter(i=>i!==null);
+          if (isMax) {
+            let best = -Infinity;
+            for (const i of avail) { const nb = bd.slice(); nb[i] = 'O'; best = Math.max(best, minimax(nb,false)); }
+            return best;
+          } else {
+            let best = Infinity;
+            for (const i of avail) { const nb = bd.slice(); nb[i] = 'X'; best = Math.min(best, minimax(nb,true)); }
+            return best;
+          }
+        }
+        function tttHeuristicMove(bd, qX, qO) {
+          // 進階模式：先找能贏，再擋，再中心、角、邊
+          const my = 'O', opp = 'X';
+          const avail = bd.map((v,i)=>v?null:i).filter(i=>i!==null);
+          const tryPlaceResult = (idx, who) => {
+            // 模擬進階移除 + 放置
+            let nb = bd.slice(); let nqX = qX.slice(); let nqO = qO.slice();
+            if (who==='O' && nqO.length>=3) { const rm=nqO.shift(); nb[rm]=null; }
+            if (who==='X' && nqX.length>=3) { const rm=nqX.shift(); nb[rm]=null; }
+            nb[idx]=who; return nb;
+          };
+          // 勝
+          for (const i of avail) { const nb = tryPlaceResult(i, my); if (checkWinner(nb)===my) return i; }
+          // 擋
+          for (const i of avail) { const nb = tryPlaceResult(i, opp); if (checkWinner(nb)===opp) return i; }
+          const priority = [4,0,2,6,8,1,3,5,7];
+          for (const i of priority) if (avail.includes(i)) return i;
+          return avail[0] ?? null;
+        }
+
+        function reset() {
+          setBoard(Array(9).fill(null));
+          setXQueue([]); setOQueue([]);
+          setTurn(settings.first === 'human' ? 'X' : 'O');
+          setStatus('遊戲中'); setThinking(false);
+        }
+
+        return (
+          <div className="max-w-6xl mx-auto px-4 py-6">
+            <div className="flex items-start gap-6 flex-col md:flex-row">
+              <div className="flex-1">
+                <div className="grid grid-cols-3 gap-2 w-72 h-72 select-none">
+                  {board.map((v,i)=> (
+                    <button key={i} onClick={()=>humanMove(i)} className="board-cell w-full h-full bg-white rounded-xl shadow flex items-center justify-center text-4xl font-black hover:bg-gray-50">
+                      {v}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-4 flex items-center gap-2">
+                  <button onClick={reset} className="px-3 py-1.5 rounded-lg bg-gray-900 text-white">重新開始</button>
+                  <button onClick={onExit} className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">回首頁</button>
+                  <span className="ml-2 text-gray-600">狀態：{status} {thinking && '（AI 思考中…）'}</span>
+                </div>
+              </div>
+              <div className="w-full md:w-72">
+                <Section title="規則">
+                  <p>玩家使用 <b>X</b>，AI 使用 <b>O</b>。連成三子線即可勝利。進階模式：每方棋子最多僅保留 3 枚，超過會自動移除最早放置的一枚。</p>
+                </Section>
+                <Section title="提示">
+                  <ul className="list-disc pl-5 text-gray-700">
+                    <li>標準模式使用 Minimax，難度穩定。</li>
+                    <li>進階模式使用啟發式：先勝、再擋、中心/角優先。</li>
+                  </ul>
+                </Section>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // -----------------------------
+      // 黑白棋 (Reversi)
+      // -----------------------------
+      function Reversi({ settings, onExit, onFinish }) {
+        const N = settings.size || 8;
+        const [board, setBoard] = useState(()=>initBoard(N)); // 0 空, 1 黑, -1 白
+        const humanIs = settings.first === 'black' ? 1 : -1;
+        const aiIs = -humanIs;
+        const [turn, setTurn] = useState(1); // 黑先
+        const [thinking, setThinking] = useState(false);
+        const [status, setStatus] = useState('遊戲中');
+
+        function initBoard(n) {
+          const b = Array.from({length:n},()=>Array(n).fill(0));
+          const m = n/2;
+          b[m-1][m-1] = -1; b[m][m] = -1;
+          b[m-1][m] = 1; b[m][m-1] = 1;
+          return b;
+        }
+        const dirs = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+        const inB = (r,c)=> r>=0 && c>=0 && r<N && c<N;
+
+        function legalMoves(bd, who) {
+          const res = [];
+          for (let r=0;r<N;r++) for (let c=0;c<N;c++) {
+            if (bd[r][c]!==0) continue;
+            const flips = [];
+            for (const [dr,dc] of dirs) {
+              let rr=r+dr, cc=c+dc, line=[]; let ok=false;
+              while (inB(rr,cc) && bd[rr][cc]===-who) { line.push([rr,cc]); rr+=dr; cc+=dc; }
+              if (line.length && inB(rr,cc) && bd[rr][cc]===who) { ok=true; flips.push(...line); }
+            }
+            if (flips.length) res.push({r,c,flips});
+          }
+          return res;
+        }
+        function apply(bd, move, who) {
+          const nb = bd.map(row=>row.slice());
+          nb[move.r][move.c]=who;
+          for (const [r,c] of move.flips) nb[r][c]=who;
+          return nb;
+        }
+        function score(bd) {
+          let s=0; for (let r=0;r<N;r++) for (let c=0;c<N;c++) s+=bd[r][c]; return s;
+        }
+
+        // 評估：角 + 行動力
+        const W = useMemo(()=>{
+          // 簡易權重：角 50、邊 5、中 1
+          const w = Array.from({length:N},()=>Array(N).fill(1));
+          const corners=[[0,0],[0,N-1],[N-1,0],[N-1,N-1]];
+          for (const [r,c] of corners) w[r][c]=50;
+          for (let i=1;i<N-1;i++){ w[0][i]=5; w[N-1][i]=5; w[i][0]=5; w[i][N-1]=5; }
+          return w;
+        }, [N]);
+        function evaluate(bd, who) {
+          let sum=0; for (let r=0;r<N;r++) for (let c=0;c<N;c++) sum += bd[r][c]*W[r][c];
+          const myMoves = legalMoves(bd, who).length;
+          const oppMoves = legalMoves(bd, -who).length;
+          return sum + 2*(myMoves - oppMoves);
+        }
+
+        function gameEndCheck(bd) {
+          const m1 = legalMoves(bd, 1); const m2 = legalMoves(bd, -1);
+          if (!m1.length && !m2.length) return true; return false;
+        }
+
+        // 人類落子
+        function humanMove(r,c) {
+          if (status!=='遊戲中' || thinking) return;
+          if (turn!==humanIs) return;
+          const moves = legalMoves(board, humanIs);
+          const mv = moves.find(m=>m.r===r && m.c===c);
+          if (!mv) return;
+          const nb = apply(board, mv, humanIs);
+          setBoard(nb);
+          const end = gameEndCheck(nb);
+          const nextMoves = legalMoves(nb, aiIs);
+          if (end) finishGame(nb); else if (nextMoves.length===0) { setTurn(humanIs); } else { setTurn(aiIs); }
+        }
+
+        function finishGame(bd) {
+          const s = score(bd);
+          let res='draw';
+          if (s>0) res = humanIs===1? 'win' : 'lose';
+          if (s<0) res = humanIs===-1? 'win' : 'lose';
+          setStatus(res==='win'? '玩家勝利' : (res==='lose'? 'AI 勝利':'平手'));
+          onFinish(res);
+        }
+
+        // AI 思考
+        useEffect(()=>{
+          if (status!=='遊戲中') return;
+          if (turn!==aiIs) return;
+          const mvs = legalMoves(board, aiIs);
+          if (!mvs.length) { // 無子可下，pass
+            if (legalMoves(board, humanIs).length===0) { finishGame(board); return; }
+            setTurn(humanIs); return;
+          }
+          setThinking(true);
+          const t = setTimeout(()=>{
+            const depth = settings.ai==='hard'?3 : (settings.ai==='easy'?1:2);
+            const best = alphabetaRoot(board, aiIs, depth);
+            const nb = apply(board, best, aiIs);
+            const end = gameEndCheck(nb);
+            setBoard(nb);
+            if (end) { finishGame(nb); setThinking(false); return; }
+            const nextMoves = legalMoves(nb, humanIs);
+            setTurn(nextMoves.length? humanIs : aiIs);
+            setThinking(false);
+          }, 300);
+          return ()=>clearTimeout(t);
+        }, [turn, board, status, settings.ai]);
+
+        function alphabetaRoot(bd, who, depth) {
+          const moves = legalMoves(bd, who);
+          let bestScore = -Infinity, best = moves[0];
+          for (const mv of moves) {
+            const nb = apply(bd, mv, who);
+            const val = alphabeta(nb, -who, depth-1, -Infinity, Infinity, who);
+            if (val > bestScore) { bestScore = val; best = mv; }
+          }
+          return best;
+        }
+        function alphabeta(bd, player, depth, alpha, beta, me) {
+          if (depth===0) return evaluate(bd, me);
+          const moves = legalMoves(bd, player);
+          if (!moves.length) {
+            // 無子可下 -> 換對方；若雙方都無則終局
+            if (!legalMoves(bd, -player).length) return evaluate(bd, me);
+            return alphabeta(bd, -player, depth, alpha, beta, me);
+          }
+          if (player===me) {
+            let val = -Infinity;
+            for (const mv of moves) { val = Math.max(val, alphabeta(apply(bd, mv, player), -player, depth-1, alpha, beta, me)); alpha=Math.max(alpha,val); if (alpha>=beta) break; }
+            return val;
+          } else {
+            let val = Infinity;
+            for (const mv of moves) { val = Math.min(val, alphabeta(apply(bd, mv, player), -player, depth-1, alpha, beta, me)); beta=Math.min(beta,val); if (alpha>=beta) break; }
+            return val;
+          }
+        }
+
+        function reset() {
+          setBoard(initBoard(N)); setTurn(1); setStatus('遊戲中'); setThinking(false);
+        }
+
+        const legal = turn===humanIs? legalMoves(board, humanIs).map(m=>m.r+','+m.c) : [];
+
+        return (
+          <div className="max-w-6xl mx-auto px-4 py-6">
+            <div className="flex items-start gap-6 flex-col md:flex-row">
+              <div className="flex-1">
+                <div className="inline-block bg-green-700 p-2 rounded-2xl shadow select-none">
+                  <div className="grid" style={{gridTemplateColumns:`repeat(${N}, 42px)`}}>
+                    {board.map((row,r)=> row.map((v,c)=>{
+                      const key = r+'-'+c;
+                      const can = legal.includes(r+','+c);
+                      return (
+                        <button key={key} onClick={()=>humanMove(r,c)} className={`board-cell w-[42px] h-[42px] m-[2px] rounded-md flex items-center justify-center ${can? 'ring-2 ring-yellow-300' : ''} bg-green-600 hover:bg-green-500`}>
+                          {v!==0 && (
+                            <div className={`w-8 h-8 rounded-full shadow-inner ${v===1? 'bg-black' : 'bg-white'}`}></div>
+                          )}
+                        </button>
+                      );
+                    }))}
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center gap-2">
+                  <button onClick={reset} className="px-3 py-1.5 rounded-lg bg-gray-900 text-white">重新開始</button>
+                  <button onClick={onExit} className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">回首頁</button>
+                  <span className="ml-2 text-gray-100 bg-green-700 px-2 py-1 rounded-lg">{turn===1? '黑子回合' : '白子回合'}</span>
+                  <span className="ml-2 text-gray-600">{thinking? 'AI 思考中…' : ' '}</span>
+                </div>
+              </div>
+              <div className="w-full md:w-72">
+                <Section title="規則">
+                  <p>下子需能夠夾擊並翻轉對方棋子。若無合法步需 <b>pass</b>。雙方皆無步或棋盤滿即終局。</p>
+                </Section>
+                <Section title="提示">
+                  <ul className="list-disc pl-5 text-gray-700">
+                    <li>AI 使用 α-β 搜尋，角權重較高。</li>
+                    <li>難度（easy/medium/hard）對應搜尋深度 1/2/3。</li>
+                  </ul>
+                </Section>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // -----------------------------
+      // 五子棋 (Gomoku) — 交點下子
+      // -----------------------------
+      function Gomoku({ settings, onExit, onFinish }) {
+        const N = settings.size || 15;
+        const humanIs = settings.first === 'black' ? 1 : -1;
+        const aiIs = -humanIs;
+        const [board, setBoard] = useState(()=>Array.from({length:N},()=>Array(N).fill(0)));
+        const [turn, setTurn] = useState(1);
+        const [status, setStatus] = useState('遊戲中');
+        const [thinking, setThinking] = useState(false);
+        const [last, setLast] = useState(null);
+
+        const inB = (r,c)=> r>=0 && c>=0 && r<N && c<N;
+        const dirs = [[1,0],[0,1],[1,1],[1,-1]];
+
+        function hasFive(bd, who) {
+          for (let r=0;r<N;r++) for (let c=0;c<N;c++) if (bd[r][c]===who) {
+            for (const [dr,dc] of dirs) {
+              let cnt=1, rr=r+dr, cc=c+dc;
+              while (inB(rr,cc) && bd[rr][cc]===who) { cnt++; rr+=dr; cc+=dc; }
+              rr=r-dr; cc=c-dc;
+              while (inB(rr,cc) && bd[rr][cc]===who) { cnt++; rr-=dr; cc-=dc; }
+              if (cnt>=5) return true;
+            }
+          }
+          return false;
+        }
+
+        function nearAny(bd, r, c) {
+          for (let dr=-2; dr<=2; dr++) for (let dc=-2; dc<=2; dc++) {
+            if (dr===0 && dc===0) continue; const rr=r+dr, cc=c+dc; if (inB(rr,cc) && bd[rr][cc]!==0) return true;
+          }
+          return false;
+        }
+
+        function isWinMove(bd, who, r, c) {
+          const nb = bd.map(row=>row.slice()); nb[r][c]=who; return hasFive(nb, who);
+        }
+
+        function humanMove(r,c) {
+          if (status!=='遊戲中' || thinking) return;
+          if (turn!==humanIs) return;
+          if (board[r][c]!==0) return;
+          const nb = board.map(row=>row.slice()); nb[r][c]=humanIs; setBoard(nb); setLast([r,c]);
+          if (hasFive(nb, humanIs)) { setStatus('玩家勝利'); onFinish('win'); return; }
+          setTurn(aiIs);
+        }
+
+        useEffect(()=>{
+          if (status!=='遊戲中') return;
+          if (turn!==aiIs) return;
+          setThinking(true);
+          const t = setTimeout(()=>{
+            const mv = aiMove(board, aiIs);
+            if (!mv) { setStatus('平手'); onFinish('draw'); setThinking(false); return; }
+            const [r,c] = mv; const nb = board.map(row=>row.slice()); nb[r][c]=aiIs; setBoard(nb); setLast([r,c]);
+            if (hasFive(nb, aiIs)) { setStatus('AI 勝利'); onFinish('lose'); setThinking(false); return; }
+            setTurn(humanIs); setThinking(false);
+          }, 250);
+          return ()=>clearTimeout(t);
+        }, [turn, board, status]);
+
+        function aiMove(bd, who) {
+          // 1) 直接致勝
+          for (let r=0;r<N;r++) for (let c=0;c<N;c++) if (bd[r][c]===0 && nearAny(bd,r,c)) if (isWinMove(bd, who, r, c)) return [r,c];
+          // 2) 立即封鎖
+          for (let r=0;r<N;r++) for (let c=0;c<N;c++) if (bd[r][c]===0 && nearAny(bd,r,c)) if (isWinMove(bd, -who, r, c)) return [r,c];
+          // 3) 鄰近優先 + 中央偏好
+          const cand = [];
+          for (let r=0;r<N;r++) for (let c=0;c<N;c++) if (bd[r][c]===0 && nearAny(bd,r,c)) cand.push([r,c]);
+          if (!cand.length) {
+            const mid = Math.floor(N/2); return [mid, mid];
+          }
+          const mid = (N-1)/2;
+          cand.sort((a,b)=> (dist2(a[0],a[1],mid,mid) - dist2(b[0],b[1],mid,mid)) );
+          return cand[0];
+        }
+        const dist2 = (r,c,rr,cc)=> (r-rr)*(r-rr)+(c-cc)*(c-cc);
+
+        function reset() { setBoard(Array.from({length:N},()=>Array(N).fill(0))); setTurn(1); setStatus('遊戲中'); setThinking(false); setLast(null); }
+
+        return (
+          <div className="max-w-6xl mx-auto px-4 py-6">
+            <div className="flex items-start gap-6 flex-col md:flex-row">
+              <div className="flex-1">
+                {/* 棋盤：交點放子 */}
+                <div className="inline-block bg-amber-700 p-3 rounded-2xl shadow select-none">
+                  <div className="relative" style={{width:N*36+8, height:N*36+8}}>
+                    {/* 格線 */}
+                    {Array.from({length:N}).map((_,i)=> (
+                      <>
+                        <div key={'h'+i} className="absolute left-1 right-1 bg-amber-900" style={{top: 16 + i*36 + 'px', height:2}}></div>
+                        <div key={'v'+i} className="absolute top-1 bottom-1 bg-amber-900" style={{left: 16 + i*36 + 'px', width:2}}></div>
+                      </>
+                    ))}
+                    {/* 交點（點擊區）*/}
+                    {Array.from({length:N}).map((_,r)=> (
+                      Array.from({length:N}).map((_,c)=> (
+                        <button key={r+'-'+c} onClick={()=>humanMove(r,c)} className="absolute no-tap-highlight" style={{left: 16 + c*36 - 14 + 'px', top: 16 + r*36 - 14 + 'px', width:28, height:28, borderRadius:14, background:'transparent'}}>
+                          {/* hover 點位小圈 */}
+                          <div className="w-full h-full rounded-full hover:ring-2 hover:ring-yellow-300"></div>
+                        </button>
+                      ))
+                    ))}
+                    {/* 棋子 */}
+                    {board.map((row,r)=> row.map((v,c)=> v!==0 && (
+                      <div key={'p'+r+'-'+c} className={`absolute rounded-full shadow`} style={{left: 16 + c*36 - 12 + 'px', top: 16 + r*36 - 12 + 'px', width:24, height:24, background: v===1? '#111' : '#eee', boxShadow: (last && last[0]===r && last[1]===c)? '0 0 0 3px rgba(250,204,21,0.8)' : ''}}></div>
+                    )))}
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center gap-2">
+                  <button onClick={reset} className="px-3 py-1.5 rounded-lg bg-gray-900 text-white">重新開始</button>
+                  <button onClick={onExit} className="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200">回首頁</button>
+                  <span className="ml-2 text-gray-600">{thinking? 'AI 思考中…' : ' '}</span>
+                </div>
+              </div>
+              <div className="w-full md:w-72">
+                <Section title="規則">
+                  <p>在<strong>交點</strong>落子（不是格子內）。先連成五子者勝。</p>
+                </Section>
+                <Section title="提示">
+                  <ul className="list-disc pl-5 text-gray-700">
+                    <li>AI 先檢查可直接取勝或立即封鎖對手，其次偏向中心與既有棋子附近。</li>
+                    <li>此 AI 偏輕量，適合網頁單檔部署；需要更強可改用 MCTS/威脅空間搜尋（可再幫你升級）。</li>
+                  </ul>
+                </Section>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // -----------------------------
+      // 設定 / 統計 / 說明
+      // -----------------------------
+      function SettingsView({ settings, onChange }) {
+        function update(path, value) {
+          const ns = JSON.parse(JSON.stringify(settings));
+          const [g, k] = path.split('.');
+          ns[g][k] = value; onChange(ns);
+        }
+        return (
+          <div className="max-w-6xl mx-auto px-4 py-6 grid md:grid-cols-3 gap-6">
+            <div className="bg-white rounded-2xl shadow p-5">
+              <h3 className="text-xl font-bold mb-2">井字棋</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span>先手</span>
+                  <select className="border rounded px-2 py-1" value={settings.ttt.first} onChange={e=>update('ttt.first', e.target.value)}>
+                    <option value="human">玩家</option>
+                    <option value="ai">AI</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>AI 難度</span>
+                  <select className="border rounded px-2 py-1" value={settings.ttt.ai} onChange={e=>update('ttt.ai', e.target.value)}>
+                    <option>easy</option><option>medium</option><option>hard</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>進階模式（最多 3 枚）</span>
+                  <input type="checkbox" className="h-5 w-5" checked={settings.ttt.advanced} onChange={e=>update('ttt.advanced', e.target.checked)} />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl shadow p-5">
+              <h3 className="text-xl font-bold mb-2">黑白棋</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span>先手</span>
+                  <select className="border rounded px-2 py-1" value={settings.reversi.first} onChange={e=>update('reversi.first', e.target.value)}>
+                    <option value="black">黑（玩家）</option>
+                    <option value="white">白（玩家）</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>AI 難度</span>
+                  <select className="border rounded px-2 py-1" value={settings.reversi.ai} onChange={e=>update('reversi.ai', e.target.value)}>
+                    <option>easy</option><option>medium</option><option>hard</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl shadow p-5">
+              <h3 className="text-xl font-bold mb-2">五子棋</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span>先手</span>
+                  <select className="border rounded px-2 py-1" value={settings.gomoku.first} onChange={e=>update('gomoku.first', e.target.value)}>
+                    <option value="black">黑（玩家）</option>
+                    <option value="white">白（玩家）</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>AI 難度（暫作風格佔位）</span>
+                  <select className="border rounded px-2 py-1" value={settings.gomoku.ai} onChange={e=>update('gomoku.ai', e.target.value)}>
+                    <option>easy</option><option>medium</option><option>hard</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function StatsView({ stats, onReset }) {
+        return (
+          <div className="max-w-4xl mx-auto px-4 py-6">
+            <div className="bg-white rounded-2xl shadow overflow-hidden">
+              <table className="min-w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left">遊戲</th>
+                    <th className="px-4 py-3 text-left">勝</th>
+                    <th className="px-4 py-3 text-left">負</th>
+                    <th className="px-4 py-3 text-left">平</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(stats).map(([key, v])=> (
+                    <tr key={key} className="border-t">
+                      <td className="px-4 py-3 font-semibold">{key}</td>
+                      <td className="px-4 py-3">{v.win}</td>
+                      <td className="px-4 py-3">{v.lose}</td>
+                      <td className="px-4 py-3">{v.draw}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="p-4 flex justify-end">
+                <button onClick={onReset} className="px-3 py-1.5 rounded-lg bg-gray-900 text-white">清除全部統計</button>
+              </div>
+            </div>
+            <p className="text-gray-500 mt-3">統計資料保存在瀏覽器的 localStorage，關掉網頁也會保留。</p>
+          </div>
+        );
+      }
+
+      function HelpView() {
+        return (
+          <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+            <Section title="這是什麼？">
+              <p>這是一個 <b>單檔即可部署</b> 的 AI 桌遊合集網頁（本頁就是 <code>index.html</code>）。直接放到 GitHub Pages、Netlify、Vercel 或任意靜態空間就能跑。</p>
+            </Section>
+            <Section title="如何在我電腦關機時也能用？">
+              <p>因為這個是 <b>前端單頁</b>，AI 計算在瀏覽器內進行；你電腦關機時，<b>伺服器（例如 GitHub Pages/Vercel）會持續提供頁面</b>，別人仍可開啟並與 AI 對戰，<b>但自動執行的對戰（AI 對 AI）不會在沒人打開頁面時進行</b>。如果你需要「無人開頁也持續模擬」，可以另外用 Cloudflare Workers/CRON 或 Supabase 例行任務在雲端跑模擬（可再告訴我，我幫你加後端）。</p>
+            </Section>
+            <Section title="部署步驟（最簡）">
+              <ol className="list-decimal pl-6 space-y-1">
+                <li>把本檔案存為 <code>index.html</code>。</li>
+                <li>上傳到 GitHub 新倉庫 → 設定 GitHub Pages（root）。</li>
+                <li>或直接丟到 Netlify/Vercel 當靜態站點。</li>
+              </ol>
+              <p className="text-gray-500">* 若需跨裝置同步統計/排行榜，可加上 Supabase/Firestore 做雲端儲存。</p>
+            </Section>
+          </div>
+        );
+      }
+
+      // -----------------------------
+      // 殼層 App
+      // -----------------------------
+      function App() {
+        const [view, setView] = useState('home'); // home | ttt | reversi | gomoku | settings | stats | help
+        const [settings, setSettings] = useState(()=> loadLS(LS_KEYS.SETTINGS, defaultSettings));
+        const [stats, setStats] = useState(()=> loadLS(LS_KEYS.STATS, defaultStats));
+
+        useEffect(()=>saveLS(LS_KEYS.SETTINGS, settings), [settings]);
+        useEffect(()=>saveLS(LS_KEYS.STATS, stats), [stats]);
+
+        function record(game, res) {
+          setStats(prev => ({ ...prev, [game]: { ...prev[game], [res]: prev[game][res]+1 } }));
+        }
+
+        return (
+          <div>
+            <TopBar onHome={()=>setView('home')} onSettings={()=>setView('settings')} onStats={()=>setView('stats')} onHelp={()=>setView('help')} />
+            {view==='home' && (
+              <Home
+                settings={settings}
+                onStartTTT={()=>setView('ttt')}
+                onStartReversi={()=>setView('reversi')}
+                onStartGomoku={()=>setView('gomoku')}
+              />
+            )}
+            {view==='settings' && (
+              <SettingsView settings={settings} onChange={setSettings} />
+            )}
+            {view==='stats' && (
+              <StatsView stats={stats} onReset={()=>{ if (confirm('確定要清除所有統計？')) setStats(defaultStats); }} />
+            )}
+            {view==='help' && <HelpView />}
+            {view==='ttt' && (
+              <TicTacToe settings={settings.ttt} onExit={()=>setView('home')} onFinish={(r)=>record('ttt', r)} />
+            )}
+            {view==='reversi' && (
+              <Reversi settings={settings.reversi} onExit={()=>setView('home')} onFinish={(r)=>record('reversi', r)} />
+            )}
+            {view==='gomoku' && (
+              <Gomoku settings={settings.gomoku} onExit={()=>setView('home')} onFinish={(r)=>record('gomoku', r)} />
+            )}
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
